@@ -52,15 +52,24 @@ pkill -9 Xorg 2>/dev/null
 sleep 2
 
 # ---------------------------------------------------------------------------
-echo "===== [B] UNBIND + UNLOAD ====="
+echo "===== [B] KILL HOLDERS, THEN UNBIND + UNLOAD ====="
+# ORDER MATTERS (2026-09-26 GPU1 lesson): unbinding while ANY process holds
+# /dev/nvidia* wedges the driver's remove callback in nv_pci_remove_helper
+# -> os_delay forever ("NVRM: Attempting to remove device ... non-zero usage
+# count"). Killing the holder afterwards does NOT unstick it - only a reboot
+# does. So: kill every holder FIRST, verify zero handles, THEN unbind.
+fuser -k /dev/nvidia* 2>/dev/null
+sleep 3
+fuser -k /dev/nvidia* 2>/dev/null
+sleep 2
+HELD=$(lsof /dev/nvidia* 2>/dev/null | tail -n +2 | wc -l)
+[ "$HELD" -eq 0 ] || die "$HELD handles still open on /dev/nvidia* - do NOT unbind; find and stop the holder first"
 # unbind BOTH GPUs, otherwise rmmod fails with "in use".
 # NOTE: if this write hangs in D state, the card's Falcon is wedged -> cold
 # power cycle is the only way out (see docs/01-falcon-window.md).
 for BDF in "$BDF_SELF" "$BDF_OTHER"; do
     echo "$BDF" > /sys/bus/pci/drivers/nvidia/unbind 2>/dev/null || echo "unbind $BDF failed (maybe not bound)"
 done
-sleep 2
-fuser -k /dev/nvidia* 2>/dev/null
 sleep 2
 for i in 1 2 3 4 5 6 7 8; do
     rmmod nvidia_uvm 2>/dev/null; rmmod nvidia_drm 2>/dev/null
@@ -73,14 +82,18 @@ echo "UNLOADED-OK"
 sleep 2
 
 # ---------------------------------------------------------------------------
-echo "===== [C] BACKUP current VBIOS (this is your rollback point) ====="
-# This must be the FIRST nvflash operation on this card since the last reset
-# (cold boot). Do not insert any other nvflash call before it.
-timeout 120 "$NV" -i "$INDEX" --save "$BK"
-ls -la "$BK" || die "backup failed - ABORT, do not flash"
-[ -s "$BK" ] || die "backup is empty - ABORT, do not flash"
-"$NV" --version "$BK" 2>&1 | grep -E "^Version|Device ID|Subsystem ID" || true
-echo "BACKUP-OK: $BK"
+echo "===== [C] ROLLBACK CHECK (NOT a backup!) ====="
+# DO NOT run `--save` here. Backup and write cannot share one Falcon window:
+# op#1 --save + op#2 write => write dies with "Falcon In HALT or STOP state"
+# (docs/01-falcon-window.md). Your rollback ROM must already exist from an
+# EARLIER boot window, or use a same-version ROM from the twin card (verify
+# the static region <0xC2000 matches, then it is equivalent for rollback).
+ROLLBACK="${ROLLBACK:-}"
+if [ -n "$ROLLBACK" ] && [ -f "$ROLLBACK" ]; then
+    echo "rollback ROM present: $ROLLBACK"
+else
+    die "no rollback ROM - get one from an earlier boot window first (ABORT)"
+fi
 
 # ---------------------------------------------------------------------------
 echo "===== [D] WRITE (first Falcon op of a fresh window, timed 'y' via pty) ====="
