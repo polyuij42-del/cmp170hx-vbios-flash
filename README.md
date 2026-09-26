@@ -80,12 +80,12 @@ sudo reboot
 
 | 文件 | 说明 |
 |---|---|
-| `scripts/flash_170hx_300w.sh` | 主刷写脚本（备份→刷写→回读校验一体，卡序号可参数化） |
+| `scripts/flash_170hx_300w.sh` | 主刷写脚本（冻结→清引用→unbind/rmmod→写入→回读校验一体，卡序号/ROM/回滚 ROM 均可参数化） |
 | `scripts/verify_170hx.sh` | 重启后验证：版本 / 64GB / 显存上限 / 功耗墙 / PLM dmesg |
 | `scripts/check_rom.py` | ROM 结构校验（确认真身，见下） |
 | `docs/01-falcon-window.md` | "一次窗口一个操作" 规律的完整证据链 |
 | `docs/02-rom-verification.md` | 不信 md5 的 ROM 真身校验法（对照独立逆向文档逐标记核验） |
-| `docs/03-failure-chronology.md` | 13 版脚本失败全记录（每种报错的含义与修法） |
+| `docs/03-failure-chronology.md` | 18 版脚本失败全记录 + usage-count 卡死 + 无驱动直刷配方 |
 
 ## ROM 来源与校验
 
