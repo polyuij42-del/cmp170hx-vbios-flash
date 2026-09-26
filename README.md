@@ -25,10 +25,14 @@
 ## 快速开始
 
 ```bash
-# 0) 备齐：nvflash 5.867（NVIDIA 官网下载 linux zip）、已校验的 300W ROM
-# 1) 干跑前先看脚本头部参数（ROM 路径 / 卡序号 / 日志目录）
-sudo ./scripts/flash_170hx_300w.sh          # 默认刷 adapter <0>
-# 2) 脚本会自动：停服务 → 卸驱动 → 备份原厂 ROM → 刷写（伪终端自动确认 y）→ 回读校验
+# 0) 备齐：nvflash 5.867（NVIDIA 官网下载 linux zip）、已校验的 300W ROM、一份 250W 回滚 ROM
+#    回滚 ROM 必须在【本次开机之前】就存在 —— 备份与写入不能共用一个 Falcon 窗口（见 docs/01）
+# 1) 参数用环境变量覆盖（脚本头部有默认值）：
+sudo INDEX=0 BDF_SELF=0000:02:00.0 BDF_OTHER=0000:81:00.0 \
+     ROM=/path/to/300w.rom ROLLBACK=/path/to/250w_backup.rom \
+     ./scripts/flash_170hx_300w.sh
+# 2) 脚本自动：冻结 udev/gdm → 杀 /dev/nvidia* 持有者并 lsof 校验为 0 → unbind 两卡 + rmmod
+#            → 写入（伪终端定时喂 y；写入 = 窗口内第一个操作）→ 回读校验 → 还原现场
 # 3) 看到 "A reboot is required for the update to take effect." + exit 0 后重启
 sudo reboot
 # 4) 验证
@@ -37,6 +41,14 @@ sudo reboot
 
 **成功判据**：nvflash 退出码 0 + typescript 出现 `A reboot is required for the update to take effect.`；
 重启后 `nvidia-smi --query-gpu=vbios_version` 显示 `92.00.6D.00.0A`，`clocks.max.memory=1728`，`memory.total=65536`（装了 cmpunlocker 的话）。
+
+**如果 unbind 挂死**（内核栈 `nv_pci_remove_helper → os_delay`，见 docs/03「usage-count 卡死」）：
+某些卡/主板组合的 sysfs unbind 会**零引用也惯性挂死**。此时改用**无驱动直刷** —— 把
+`install nvidia /bin/false`（连同 nvidia_modeset / nvidia_drm / nvidia_uvm）写进
+`/etc/modprobe.d/` 后冷启动，驱动从头不加载，nvflash 直接写（它通过
+`/sys/bus/pci/devices/` + `/dev/mem` 直访 BAR，**不需要内核驱动**），冷启动次数还从 2 次降到 1 次。
+完整配方见 docs/03「无驱动直刷」。⚠️ 带着 unbind 楔死的内核发 `reboot` 会让机器卡死在重启半途
+（关机路径走不完，只能人工冷断电）——所以 unbind 一挂就立刻改走这条路，别急着重启。
 
 ## 关键发现（不看必踩坑）
 
@@ -56,8 +68,13 @@ sudo reboot
 4. **驱动会自己回来。** gdm3 / udevd 会在几秒内重新 modprobe nvidia，刷写中途被插一脚 = 砖险。
    ⇒ 临时 `install nvidia /bin/false` blacklist（刷完删）+ 停 udevd 全部 socket + 停 gdm3。
 5. **rmmod 前先 unbind 两张卡**：`echo <bdf> > /sys/bus/pci/drivers/nvidia/unbind`。
-   卡僵死时 unbind 会挂进 D 状态（kill 不掉），只能冷断电。
+   ⚠️ **unbind 之前必须确认没有任何进程握着 `/dev/nvidia*`**（`lsof /dev/nvidia*` 为 0）：
+   只要有一台 vLLM / Xorg 还开着句柄，驱动的 remove 回调就会卡死在
+   `nv_pci_remove_helper → os_delay`，**事后杀掉持有者也救不回来**，只能重启。
+   卡僵死时 unbind 同样挂死（kill 不掉），带病内核发 `reboot` 会卡死在重启半途。
 6. **日志不要放 /tmp**（Ubuntu 重启清空），全部落在持久目录。
+7. **`pkill -f "<模式>"` 会杀掉自己的 ssh 会话**（模式串就在命令行里）：用自避正则
+   （`flash_gpu1_v1[8]`）或按 PID 杀。
 
 ## 文件
 
@@ -79,7 +96,10 @@ sudo reboot
   且 InfoROM 可能含 per-card 数据。**别用 md5 判真伪**，用 `scripts/check_rom.py` 做结构核验
   （NVGI 头 / devid 0x20C2 / subsys 0x1585 / 功耗字节 `E0 93 04`@0x46045 / strap tier `0x44`@0x41F53 /
   许可证区全零等，判据来自 [amoghmunikote 的 GA100 VBIOS 逆向 gist](https://gist.github.com/amoghmunikote/dafea7b6663c13edc28b33872f6e51be)）。
-- 刷写脚本写入前会先把卡上现有 ROM `--save` 备份到持久目录，这就是回滚点。
+- 回滚 ROM 必须**提前准备**：`--save` 备份会吃掉 Falcon 窗口，所以不能和写入放在同一次开机里
+  （要备份就多花一次冷启动）。若手上没有本卡的 250W 备份，**同型号另一张卡的 250W dump 也可用**——
+  先比对静态区（`<0xC2000`）逐位一致即可确认等效（本仓库实测：两张卡 dump 静态区 0 字节差异，
+  6 万余处差异全部落在每开机变化的动态区）。
 
 ## 回滚
 
